@@ -144,8 +144,27 @@ async function downscaleToDataUrl(file, max = 1600) {
 }
 async function uploadImageFile(file) {
   const dataUrl = await downscaleToDataUrl(file);
-  const { url } = await api('uploadImage', { dataUrl, filename: file.name });
+  const { url } = await api('uploadImage', { dataUrl, filename: file.name || 'image.png' });
   return url;
+}
+function fileToDataUrl(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+}
+// Arbitrary (non-image) file -> Drive download URL + name.
+async function uploadAnyFile(file) {
+  const dataUrl = await fileToDataUrl(file);
+  return await api('uploadFile', { dataUrl, filename: file.name || 'datei' });
+}
+// A freshly uploaded Drive image can be briefly unavailable, and <img> won't
+// retry on its own. Re-attempt ONCE after a delay (gentle — lh3 rate-limits
+// aggressive reloads with HTTP 429).
+function armImageRetries(root) {
+  root.querySelectorAll('img:not([data-retry])').forEach(img => {
+    img.dataset.retry = '1'; const src = img.getAttribute('src'); let done = false;
+    const retryOnce = () => { if (done || !src) return; done = true; setTimeout(() => { img.removeAttribute('src'); img.src = src; }, 3000); };
+    img.addEventListener('error', retryOnce, { once: true });
+    if (img.complete && img.naturalWidth === 0) retryOnce(); // already failed before we attached
+  });
 }
 
 /* ---------- routing (§7) ---------- */
@@ -335,6 +354,7 @@ async function viewCard(slug, anchorId) {
     await api('deleteCard', { id: card.id }); toast('Card gelöscht'); go('/');
   };
 
+  armImageRetries(main());
   wireComments(card);
 
   if (anchorId) {
@@ -429,6 +449,9 @@ function openReply(cmt, card, parentId) {
 }
 
 /* ---------- editor (new + edit) ---------- */
+// Notion-style composer: one borderless title line + one WYSIWYG body surface.
+// Edits render as you type, are stored as Markdown (via Turndown), and support
+// inline images and file attachments by button, paste, or drag & drop.
 async function viewEditor(slug) {
   const id = getIdentity();
   if (!id) { main().innerHTML = `<div class="main-col"><div class="empty">Erst <a href="#/onboard">Identität anlegen</a>.</div></div>`; return; }
@@ -439,100 +462,147 @@ async function viewEditor(slug) {
     card = { ...r.card };
     if (r.card.ownerNamespace !== id.namespace) { main().innerHTML = `<div class="main-col"><div class="empty">Nicht dein Card.</div></div>`; return; }
   }
-  const spaces = await api('listSpaces', {});
+  const spaces = SPACES_CACHE;
+  const visOpt = (v, label) => `<option value="${v}" ${card.visibility === v ? 'selected' : ''}>${label}</option>`;
 
   main().innerHTML = `
-    <div class="main-col">
-      <div class="page-head"><h1>${slug ? 'Card bearbeiten' : 'Neue Card'}</h1>
-        <a class="btn ghost sm" href="${slug ? '#/c/' + escapeHtml(slug) : '#/'}">Abbrechen</a></div>
-      <div class="field"><label>Titel</label><input type="text" id="fTitle" value="${escapeHtml(card.title)}" placeholder="Titel der Card"></div>
-      <div class="field"><label>Sichtbarkeit</label>
-        <select id="fVis">
-          <option value="public" ${card.visibility === 'public' ? 'selected' : ''}>public — jeder mit Link</option>
-          <option value="private" ${card.visibility === 'private' ? 'selected' : ''}>private — nur ich</option>
-          <option value="space" ${card.visibility === 'space' ? 'selected' : ''}>space — Mitglieder eines Space</option>
+    <div class="main-col composer">
+      <div class="composer-bar">
+        <a class="btn ghost sm" href="${slug ? '#/c/' + escapeHtml(slug) : '#/'}">← Abbrechen</a>
+        <span class="sp"></span>
+        <select id="cVis" class="pill-select" aria-label="Sichtbarkeit">
+          ${visOpt('public', '🌐 Öffentlich')}${visOpt('private', '🔒 Privat')}${visOpt('space', '👥 Space')}
         </select>
-        <div class="hint" id="visHint"></div>
-      </div>
-      <div class="field" id="spaceWrap" hidden><label>Space</label>
-        <select id="fSpace">${spaces.map(s => `<option value="${escapeHtml(s.id)}" ${card.spaceId === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>
-        ${spaces.length ? '' : '<div class="hint">Du bist in keinem Space — erst unter „Spaces verwalten" einen anlegen.</div>'}
-      </div>
-
-      <div class="field"><label>Bilder</label>
-        <div class="dropzone" id="drop">Bild hierher ziehen oder <u>klicken</u> zum Hochladen (wird auf max. 1600px skaliert)</div>
-        <input type="file" id="fFile" accept="image/*" multiple hidden>
-        <div class="thumbs" id="thumbs"></div>
+        <select id="cSpace" class="pill-select" aria-label="Space" ${card.visibility === 'space' ? '' : 'hidden'}>
+          ${spaces.map(s => `<option value="${escapeHtml(s.id)}" ${card.spaceId === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+        </select>
+        <button class="btn sm" id="cSave">${slug ? 'Speichern' : 'Veröffentlichen'}</button>
       </div>
 
-      <div class="field"><label>Inhalt (Markdown)</label>
-        <div class="editor-grid">
-          <div class="pane"><h3>Editor</h3><textarea id="fBody" style="min-height:300px">${escapeHtml(card.body)}</textarea></div>
-          <div class="pane"><h3>Vorschau</h3><div class="preview-box md" id="preview"></div></div>
-        </div>
+      <input id="cTitle" class="composer-title" placeholder="Unbenannt" value="${escapeHtml(card.title)}" autocomplete="off">
+
+      <div class="composer-toolbar" id="cTb">
+        <button data-cmd="h2" title="Überschrift" tabindex="-1">H</button>
+        <button data-cmd="bold" title="Fett (⌘B)" tabindex="-1"><b>B</b></button>
+        <button data-cmd="italic" title="Kursiv (⌘I)" tabindex="-1"><i>I</i></button>
+        <span class="tb-sep"></span>
+        <button data-cmd="ul" title="Aufzählung" tabindex="-1">•</button>
+        <button data-cmd="ol" title="Nummerierte Liste" tabindex="-1">1.</button>
+        <button data-cmd="quote" title="Zitat" tabindex="-1">❝</button>
+        <button data-cmd="code" title="Code" tabindex="-1">&lt;/&gt;</button>
+        <span class="tb-sep"></span>
+        <button data-act="link" title="Link" tabindex="-1">🔗</button>
+        <button data-act="image" title="Bild einfügen" tabindex="-1">🖼</button>
+        <button data-act="file" title="Datei anhängen" tabindex="-1">📎</button>
       </div>
 
-      <div class="row"><button class="btn" id="saveCard">${slug ? 'Speichern' : 'Card erstellen'}</button>
-        <span class="muted" id="saveMsg"></span></div>
+      <div id="cBody" class="composer-body md" contenteditable="true" data-ph="Schreib etwas… Bilder & Dateien einfach reinziehen oder über 🖼/📎 einfügen."></div>
+      <div class="composer-foot muted" id="cMsg"></div>
+
+      <input type="file" id="cImg" accept="image/*" multiple hidden>
+      <input type="file" id="cAny" multiple hidden>
     </div>`;
 
-  let images = Array.isArray(card.images) ? card.images.slice() : [];
-  const body = $('#fBody'), preview = $('#preview'), visSel = $('#fVis');
-  const renderPreview = () => { preview.innerHTML = renderMd(body.value); };
-  body.oninput = renderPreview; renderPreview();
+  const titleEl = $('#cTitle'), bodyEl = $('#cBody'), visSel = $('#cVis'), spaceSel = $('#cSpace'), msg = $('#cMsg');
+  bodyEl.innerHTML = card.body ? renderMd(card.body) : '';
+  armImageRetries(bodyEl);
+  try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
 
-  const syncVis = () => {
-    const v = visSel.value;
-    $('#spaceWrap').hidden = v !== 'space';
-    $('#visHint').textContent = v === 'private'
-      ? 'Hinweis: Hochgeladene Bilder bleiben technisch über ihre Drive-Link-URL erreichbar.'
-      : (v === 'public' ? 'Jeder mit dem Link kann diese Card sehen.' : '');
+  visSel.onchange = () => {
+    spaceSel.hidden = visSel.value !== 'space';
+    msg.textContent = (visSel.value === 'space' && !spaces.length) ? 'Du bist in keinem Space — erst unter „Spaces verwalten" einen anlegen.' : '';
   };
-  visSel.onchange = syncVis; syncVis();
 
-  function renderThumbs() {
-    $('#thumbs').innerHTML = images.map((u, i) => `<div class="thumb">
-      <img src="${escapeHtml(u)}" alt="">
-      <button data-rm="${i}" title="Entfernen">✕</button>
-      <button class="ins" data-ins="${i}" title="In Text einfügen">einfügen</button></div>`).join('');
-    $$('#thumbs [data-rm]').forEach(b => b.onclick = () => { images.splice(+b.dataset.rm, 1); renderThumbs(); });
-    $$('#thumbs [data-ins]').forEach(b => b.onclick = () => {
-      const u = images[+b.dataset.ins];
-      body.value += `\n\n![](${u})\n`; renderPreview();
-    });
+  // ---- caret persistence (so toolbar / file dialogs can insert at the last spot) ----
+  let savedRange = null;
+  const saveSel = () => { const s = getSelection(); if (s && s.rangeCount && bodyEl.contains(s.anchorNode)) savedRange = s.getRangeAt(0).cloneRange(); };
+  ['keyup', 'mouseup', 'focus'].forEach(ev => bodyEl.addEventListener(ev, saveSel));
+  function restoreSel() {
+    bodyEl.focus();
+    const s = getSelection();
+    if (savedRange) { s.removeAllRanges(); s.addRange(savedRange); }
+    else if (!s.rangeCount) { const r = document.createRange(); r.selectNodeContents(bodyEl); r.collapse(false); s.removeAllRanges(); s.addRange(r); }
   }
-  renderThumbs();
-
-  async function handleFiles(files) {
-    for (const f of files) {
-      if (!f.type.startsWith('image/')) continue;
-      $('#drop').textContent = 'Lädt hoch…';
-      try { const url = await uploadImageFile(f); images.push(url); renderThumbs(); }
-      catch (e) { alert('Upload fehlgeschlagen: ' + e.message); }
-    }
-    $('#drop').innerHTML = 'Bild hierher ziehen oder <u>klicken</u> zum Hochladen (wird auf max. 1600px skaliert)';
+  function insertNodeAtCaret(node) {
+    restoreSel();
+    const s = getSelection(), r = s.getRangeAt(0);
+    r.deleteContents(); r.insertNode(node);
+    r.setStartAfter(node); r.collapse(true); s.removeAllRanges(); s.addRange(r); saveSel();
   }
-  const drop = $('#drop'), fileInput = $('#fFile');
-  drop.onclick = () => fileInput.click();
-  fileInput.onchange = () => handleFiles(fileInput.files);
-  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
-  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
-  drop.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
 
-  $('#saveCard').onclick = async () => {
-    const btn = $('#saveCard'); btn.disabled = true; $('#saveMsg').textContent = 'Speichert…';
+  // ---- toolbar ----
+  const tb = $('#cTb');
+  tb.addEventListener('mousedown', e => { if (e.target.closest('button')) e.preventDefault(); }); // keep the caret in the body
+  tb.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const cmd = b.dataset.cmd, act = b.dataset.act;
+    if (cmd) applyCmd(cmd);
+    else if (act === 'link') { restoreSel(); const url = prompt('Link-URL:'); if (url) document.execCommand('createLink', false, url); saveSel(); }
+    else if (act === 'image') $('#cImg').click();
+    else if (act === 'file') $('#cAny').click();
+  });
+  function applyCmd(cmd) {
+    restoreSel();
+    if (cmd === 'h2') document.execCommand('formatBlock', false, '<h2>');
+    else if (cmd === 'bold') document.execCommand('bold');
+    else if (cmd === 'italic') document.execCommand('italic');
+    else if (cmd === 'ul') document.execCommand('insertUnorderedList');
+    else if (cmd === 'ol') document.execCommand('insertOrderedList');
+    else if (cmd === 'quote') document.execCommand('formatBlock', false, '<blockquote>');
+    else if (cmd === 'code') { const r = getSelection().getRangeAt(0); if (!r.collapsed) { const c = document.createElement('code'); c.appendChild(r.extractContents()); r.insertNode(c); } }
+    saveSel();
+  }
+
+  // ---- inline media (inserted as their own block for clean Markdown) ----
+  function insertHtmlAtCaret(html) { restoreSel(); document.execCommand('insertHTML', false, html); saveSel(); }
+  async function insertImage(file) {
+    msg.textContent = 'Bild wird hochgeladen…';
+    try { const url = await uploadImageFile(file); insertHtmlAtCaret(`<p><img src="${escapeHtml(url)}" alt=""></p><p><br></p>`); armImageRetries(bodyEl); msg.textContent = ''; }
+    catch (e) { msg.textContent = ''; alert('Bild-Upload fehlgeschlagen: ' + e.message); }
+  }
+  async function insertFile(file) {
+    msg.textContent = 'Datei wird hochgeladen…';
+    try { const { url, name } = await uploadAnyFile(file); insertHtmlAtCaret(`<p><a href="${escapeHtml(url)}">📎 ${escapeHtml(name)}</a></p><p><br></p>`); msg.textContent = ''; }
+    catch (e) { msg.textContent = ''; alert('Datei-Upload fehlgeschlagen: ' + e.message); }
+  }
+  $('#cImg').onchange = async (e) => { for (const f of e.target.files) await insertImage(f); e.target.value = ''; };
+  $('#cAny').onchange = async (e) => { for (const f of e.target.files) await insertFile(f); e.target.value = ''; };
+
+  bodyEl.addEventListener('paste', async (e) => {
+    const items = e.clipboardData ? e.clipboardData.items : [];
+    let pastedImage = false;
+    for (const it of items) { if (it.type && it.type.startsWith('image/')) { e.preventDefault(); pastedImage = true; saveSel(); await insertImage(it.getAsFile()); } }
+    if (pastedImage) return;
+    const text = e.clipboardData.getData('text/plain'); // paste as plain text to keep markup clean
+    if (text) { e.preventDefault(); document.execCommand('insertText', false, text); }
+  });
+  bodyEl.addEventListener('dragover', e => { e.preventDefault(); bodyEl.classList.add('drag'); });
+  bodyEl.addEventListener('dragleave', () => bodyEl.classList.remove('drag'));
+  bodyEl.addEventListener('drop', async e => {
+    e.preventDefault(); bodyEl.classList.remove('drag'); saveSel();
+    for (const f of e.dataTransfer.files) { if (f.type.startsWith('image/')) await insertImage(f); else await insertFile(f); }
+  });
+
+  titleEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); bodyEl.focus(); } });
+
+  // ---- save: serialize WYSIWYG HTML back to Markdown ----
+  const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-', emDelimiter: '*' });
+  $('#cSave').onclick = async () => {
+    const btn = $('#cSave'); btn.disabled = true; msg.textContent = 'Speichert…';
     const payload = {
-      title: $('#fTitle').value.trim() || 'Untitled',
-      body: body.value, images,
+      title: titleEl.value.trim() || 'Unbenannt',
+      body: turndown.turndown(bodyEl.innerHTML).trim(),
       visibility: visSel.value,
-      spaceId: visSel.value === 'space' ? ($('#fSpace') && $('#fSpace').value) || '' : '',
+      spaceId: visSel.value === 'space' ? (spaceSel.value || '') : '',
     };
     try {
       if (visSel.value === 'space' && !payload.spaceId) throw new Error('Bitte einen Space wählen (oder erst anlegen).');
       if (card.id) { await api('updateCard', { id: card.id, ...payload }); toast('Gespeichert'); go('/c/' + slug); }
       else { const r = await api('createCard', payload); toast('Card erstellt'); go('/c/' + r.slug); }
-    } catch (e) { $('#saveMsg').textContent = ''; alert(e.message); btn.disabled = false; }
+    } catch (e) { msg.textContent = ''; btn.disabled = false; alert(e.message); }
   };
+
+  titleEl.focus();
 }
 
 /* ---------- onboarding (§3) ---------- */

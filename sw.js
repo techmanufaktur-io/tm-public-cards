@@ -11,6 +11,7 @@ const SHELL = [
   // CDN libs (CORS-enabled) so the shell also works offline
   'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js',
   'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js',
+  'https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.js',
 ];
 
 self.addEventListener('install', (e) => {

@@ -180,6 +180,39 @@ textarea{resize:vertical;min-height:120px;line-height:1.5}
 }
 .thumb .ins{position:absolute;left:0;bottom:0;width:100%;font-size:10px;background:rgba(17,17,17,.7);color:#fff;border:none;border-radius:0 0 8px 8px;cursor:pointer;padding:2px}
 
+/* ---------- composer (WYSIWYG new/edit card) ---------- */
+.composer-bar{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.composer-bar .sp{flex:1}
+.pill-select{
+  -webkit-appearance:none;appearance:none;border:1px solid var(--border-strong);background:var(--bg);
+  border-radius:999px;padding:7px 30px 7px 14px;font-family:inherit;font-size:13px;font-weight:600;color:var(--fg);cursor:pointer;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23111' stroke-width='3'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat:no-repeat;background-position:right 11px center;
+}
+.pill-select:focus{outline:none;border-color:var(--accent)}
+.composer-title{
+  width:100%;border:none;outline:none;background:transparent;padding:0;margin:2px 0 4px;
+  font-family:inherit;font-size:32px;font-weight:700;letter-spacing:-.025em;color:var(--fg);line-height:1.15;
+}
+.composer-title::placeholder{color:var(--fg-mute)}
+.composer-toolbar{
+  position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:1px;flex-wrap:wrap;
+  padding:6px 0;margin-bottom:6px;border-bottom:1px solid var(--border);background:var(--bg);
+}
+.composer-toolbar button{
+  min-width:32px;height:32px;padding:0 8px;border:none;background:transparent;border-radius:8px;cursor:pointer;
+  font-size:14px;color:var(--fg-soft);display:inline-flex;align-items:center;justify-content:center;
+}
+.composer-toolbar button:hover{background:var(--bg-hover);color:var(--fg)}
+.composer-toolbar .tb-sep{width:1px;height:18px;background:var(--border);margin:0 7px}
+.composer-body{min-height:320px;outline:none;padding:6px 0 48px;caret-color:var(--accent)}
+.composer-body:empty:before{content:attr(data-ph);color:var(--fg-mute);pointer-events:none}
+.composer-body:focus{outline:none}
+.composer-body.drag{outline:2px dashed var(--accent);outline-offset:8px;border-radius:10px}
+.composer-body img{cursor:default}
+.composer-foot{min-height:18px;margin-top:8px;font-size:12px}
+@media (max-width:820px){ .composer-title{font-size:26px} }
+
 /* ---------- comments (§10) ---------- */
 .comments-head{font-weight:700;font-size:16px;margin:24px 0 12px}
 .cmt{margin-top:14px}

@@ -117,6 +117,7 @@ function route(action, payload, auth) {
     case 'getCard':        return getCard(payload, auth);
     case 'listCards':      return listCards(payload, auth);
     case 'uploadImage':    return uploadImage(payload, requireAuth(auth));
+    case 'uploadFile':     return uploadFile(payload, requireAuth(auth));
     case 'addComment':     return addComment(payload, requireAuth(auth));
     case 'deleteComment':  return deleteComment(payload, requireAuth(auth));
     case 'createSpace':    return createSpace(payload, requireAuth(auth));
@@ -201,6 +202,18 @@ function uploadImage(p, user) {
   // and no longer serves images inline cross-origin.)
   const url = 'https://lh3.googleusercontent.com/d/' + file.getId();
   return { url };
+}
+
+// Upload an arbitrary (non-image) file; returns a public download URL + name.
+function uploadFile(p, user) {
+  const m = String(p.dataUrl || '').match(/^data:([^;]*);base64,(.+)$/);
+  if (!m) throw new Error('BAD_FILE');
+  const name = p.filename || ('file_' + uuid());
+  const blob = Utilities.newBlob(Utilities.base64Decode(m[2]), m[1] || 'application/octet-stream', name);
+  const folder = getDriveFolder();
+  const file = folder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return { url: 'https://drive.google.com/uc?export=download&id=' + file.getId(), name };
 }
 
 // --- cards ---
