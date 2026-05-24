@@ -13,7 +13,7 @@ const PROPS = PropertiesService.getScriptProperties();
 const SCHEMA = {
   users:    ['namespace', 'firstName', 'lastName', 'displayName', 'tokenHash', 'createdAt'],
   cards:    ['id', 'ownerNamespace', 'title', 'body', 'images', 'visibility', 'spaceId', 'slug', 'createdAt', 'updatedAt'],
-  comments: ['id', 'cardId', 'parentId', 'authorNamespace', 'authorDisplay', 'body', 'createdAt', 'deleted'],
+  comments: ['id', 'cardId', 'parentId', 'authorNamespace', 'authorDisplay', 'body', 'createdAt', 'deleted', 'lineRef'],
   spaces:   ['id', 'name', 'slug', 'ownerNamespace', 'members', 'createdAt', 'color'],
 };
 
@@ -292,7 +292,8 @@ function addComment(p, user) {
     id, cardId: p.cardId, parentId: p.parentId || '',
     authorNamespace: user.namespace,
     authorDisplay: user.displayName || (user.firstName + ' ' + user.lastName),
-    body: p.body || '', createdAt: now(), deleted: false
+    body: p.body || '', createdAt: now(), deleted: false,
+    lineRef: (p.lineRef === 0 || p.lineRef) ? String(p.lineRef) : '' // markdown line/block this anchors to ('' = general)
   });
   return { id }; // id == comment anchor
 }
@@ -309,6 +310,7 @@ function buildCommentTree(cardId) {
     id: c.id, parentId: c.parentId, body: String(c.body), author: String(c.authorDisplay),
     authorNamespace: c.authorNamespace,
     deleted: c.deleted === true || c.deleted === 'TRUE',
+    lineRef: (c.lineRef === '' || c.lineRef == null) ? '' : String(c.lineRef),
     createdAt: c.createdAt, children: []
   }));
   const byId = {}; all.forEach(c => byId[c.id] = c);

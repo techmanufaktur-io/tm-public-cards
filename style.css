@@ -234,6 +234,32 @@ textarea{resize:vertical;min-height:120px;line-height:1.5}
   animation:cmtfade 2s ease forwards;border-radius:0 var(--radius) var(--radius) 0;
 }
 
+/* ---------- line-anchored comments ---------- */
+.doc .md-block{position:relative;padding-right:42px}
+.doc .md-block:first-child > :first-child{margin-top:0}
+.line-cmt{
+  position:absolute;right:0;top:2px;display:inline-flex;align-items:center;gap:2px;
+  border:none;background:transparent;cursor:pointer;padding:3px 5px;border-radius:8px;
+  color:var(--fg-mute);opacity:0;line-height:1;transition:opacity .12s ease,background .12s ease;
+}
+.md-block:hover .line-cmt{opacity:.5}
+.line-cmt:hover{opacity:1;background:var(--bg-hover)}
+.line-cmt.has{opacity:1;color:var(--accent)}
+.line-cmt.open{opacity:1;background:var(--bg-hover)}
+.line-cmt .bub{font-size:15px}
+.line-cmt .cnt{
+  font-size:10px;font-weight:700;background:var(--accent);color:var(--accent-fg);
+  border-radius:999px;min-width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;padding:0 4px;
+}
+.line-thread{
+  margin:10px 0 16px;padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--accent);
+  border-radius:10px;background:var(--bg-alt);
+}
+.line-thread .lt-head{font-size:12px;font-weight:600;color:var(--fg-soft);margin-bottom:6px}
+.line-thread .cmt{margin-top:8px}
+.line-thread textarea{min-height:70px}
+@media (max-width:820px){ .line-cmt{opacity:.5} }
+
 /* ---------- toast ---------- */
 #toast{
   position:fixed;left:50%;bottom:28px;transform:translateX(-50%);

@@ -318,7 +318,7 @@ function cardItemHtml(c) {
   </div>`;
 }
 
-async function viewCard(slug, anchorId) {
+async function viewCard(slug, anchorId, openLine) {
   const id = getIdentity();
   main().innerHTML = `<div class="main-col"><div class="empty">Lädt…</div></div>`;
   const { card, comments } = await api('getCard', { slug });
@@ -327,6 +327,19 @@ async function viewCard(slug, anchorId) {
   const isOwner = id && id.namespace === card.ownerNamespace;
   const gallery = (card.images && card.images.length)
     ? `<div class="gallery">${card.images.map(u => `<img src="${escapeHtml(u)}" alt="" loading="lazy">`).join('')}</div>` : '';
+
+  // Partition comment roots: anchored to a markdown line vs. general discussion.
+  const lineGroups = {}; const generalRoots = [];
+  comments.forEach(r => { const lr = (r.lineRef == null ? '' : String(r.lineRef)); if (lr === '') generalRoots.push(r); else (lineGroups[lr] = lineGroups[lr] || []).push(r); });
+
+  // Render the body block-by-block so each line gets its own comment affordance.
+  const blocks = splitBlocks(card.body);
+  const bodyHtml = blocks.map(b => {
+    const lr = String(b.line);
+    const cnt = (lineGroups[lr] || []).reduce((n, r) => n + countOpen(r), 0);
+    return `<div class="md-block" data-line="${lr}">${renderMd(b.text)}` +
+      `<button class="line-cmt ${cnt ? 'has' : ''}" data-linebtn="${lr}" title="${cnt ? cnt + ' Kommentar(e) zu dieser Zeile' : 'Zu dieser Zeile kommentieren'}"><span class="bub">💬</span>${cnt ? `<span class="cnt">${cnt}</span>` : ''}</button></div>`;
+  }).join('');
 
   main().innerHTML = `
     <div class="main-col">
@@ -344,10 +357,10 @@ async function viewCard(slug, anchorId) {
           <span class="sp"></span>${visibilityTag(card)}
         </div>
         <h1 class="c-title" style="font-size:24px">${escapeHtml(card.title)}</h1>
-        <div class="md">${renderMd(card.body)}</div>
+        <div class="md doc" id="cardBody">${bodyHtml || renderMd(card.body)}</div>
         ${gallery}
       </div>
-      ${commentsSectionHtml(card, comments)}
+      ${commentsSectionHtml(card, generalRoots)}
     </div>`;
 
   if (isOwner) $('#delCard').onclick = async () => {
@@ -356,7 +369,70 @@ async function viewCard(slug, anchorId) {
   };
 
   armImageRetries(main());
-  wireComments(card);
+
+  // Inline thread for a single markdown line.
+  function closeThreads() { $$('.line-thread', main()).forEach(t => t.remove()); $$('.line-cmt.open', main()).forEach(b => b.classList.remove('open')); }
+  function toggleLineThread(line) {
+    const block = $(`.md-block[data-line="${line}"]`, main());
+    if (!block) return;
+    const wasOpen = block.nextElementSibling && block.nextElementSibling.classList.contains('line-thread');
+    closeThreads();
+    if (wasOpen) return;
+    const roots = lineGroups[String(line)] || [];
+    const wrap = document.createElement('div');
+    wrap.className = 'line-thread'; wrap.dataset.line = String(line);
+    wrap.innerHTML =
+      `<div class="lt-head">💬 Kommentare zu dieser Zeile</div>` +
+      `<div class="lt-list">${roots.length ? roots.map(c => commentHtml(c, 0)).join('') : '<div class="muted" style="font-size:13px">Noch keine — schreib den ersten.</div>'}</div>` +
+      (id
+        ? `<div class="reply-box" style="margin-top:8px"><textarea class="lt-input" placeholder="Kommentar zu dieser Zeile… (Markdown)"></textarea>
+             <div class="row" style="margin-top:8px"><button class="btn sm lt-post">Kommentieren</button>
+             <button class="btn ghost sm lt-cancel">Schließen</button></div></div>`
+        : `<div class="muted" style="font-size:13px;margin-top:6px">Zum Kommentieren <a href="#/onboard">Identität anlegen</a>.</div>`);
+    block.after(wrap);
+    const bubble = $(`.line-cmt[data-linebtn="${line}"]`, main()); if (bubble) bubble.classList.add('open');
+    wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const post = $('.lt-post', wrap);
+    if (post) post.onclick = async () => {
+      const body = $('.lt-input', wrap).value.trim(); if (!body) return;
+      post.disabled = true;
+      try { await api('addComment', { cardId: card.id, body, lineRef: line }); await viewCard(card.slug, null, line); }
+      catch (e) { post.disabled = false; alert(e.message); }
+    };
+    const cancel = $('.lt-cancel', wrap); if (cancel) cancel.onclick = closeThreads;
+    const inp = $('.lt-input', wrap); if (inp && roots.length) inp.focus();
+  }
+
+  // Bottom general composer.
+  const postBtn = $('#postComment');
+  if (postBtn) postBtn.onclick = async () => {
+    const ta = $('#newComment'); const body = ta.value.trim(); if (!body) return;
+    postBtn.disabled = true;
+    try { await api('addComment', { cardId: card.id, body, lineRef: '' }); await viewCard(card.slug); }
+    catch (e) { postBtn.disabled = false; alert(e.message); }
+  };
+
+  // One delegated handler (onclick replaces any prior one — #main persists across views).
+  main().onclick = async (e) => {
+    const bubble = e.target.closest('button[data-linebtn]');
+    if (bubble) { toggleLineThread(bubble.dataset.linebtn); return; }
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const cmt = btn.closest('.cmt'); const cid = cmt.dataset.id;
+    const thread = btn.closest('.line-thread'); const lineRef = thread ? thread.dataset.line : '';
+    const act = btn.dataset.act;
+    if (act === 'link') {
+      const url = location.origin + location.pathname + cardLink(card.slug, cid);
+      try { await navigator.clipboard.writeText(url); toast('Link kopiert'); } catch { prompt('Link kopieren:', url); }
+    } else if (act === 'del') {
+      if (!confirm('Kommentar löschen?')) return;
+      await api('deleteComment', { id: cid }); await viewCard(card.slug, null, lineRef || undefined);
+    } else if (act === 'reply') {
+      openReply(cmt, card, cid, lineRef);
+    }
+  };
+
+  if (openLine != null && openLine !== '') toggleLineThread(String(openLine));
 
   if (anchorId) {
     const node = document.getElementById(anchorId);
@@ -369,19 +445,31 @@ async function viewCard(slug, anchorId) {
 }
 
 /* ---------- comments (§10) ---------- */
-function commentsSectionHtml(card, comments) {
+// Split markdown into blocks (blank-line separated), keeping each block's start line.
+function splitBlocks(md) {
+  const lines = String(md == null ? '' : md).split('\n');
+  const blocks = []; let cur = null;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '') { if (cur) { blocks.push(cur); cur = null; } continue; }
+    if (!cur) cur = { line: i, text: lines[i] }; else cur.text += '\n' + lines[i];
+  }
+  if (cur) blocks.push(cur);
+  return blocks;
+}
+// Count non-deleted comments in a subtree (for the line badge).
+function countOpen(node) { return (node.deleted ? 0 : 1) + (node.children || []).reduce((n, c) => n + countOpen(c), 0); }
+
+function commentsSectionHtml(card, generalRoots) {
   const id = getIdentity();
-  const count = countComments(comments);
+  const count = generalRoots.reduce((n, r) => n + countOpen(r), 0);
   const composer = id
-    ? `<div class="reply-box"><textarea id="newComment" placeholder="Kommentar schreiben… (Markdown)"></textarea>
+    ? `<div class="reply-box"><textarea id="newComment" placeholder="Allgemeiner Kommentar… (Markdown)"></textarea>
          <div class="row" style="margin-top:8px"><button class="btn sm" id="postComment">Kommentieren</button></div></div>`
     : `<div class="card">Zum Kommentieren <a href="#/onboard">Identität anlegen</a>.</div>`;
-  return `<h3 class="comments-head">${count} Kommentar${count === 1 ? '' : 'e'}</h3>
+  return `<h3 class="comments-head">Diskussion${count ? ` · ${count}` : ''}</h3>
+    <div class="muted" style="font-size:12px;margin:-8px 0 12px">Tipp: 💬 neben einer Zeile öffnet die Kommentare zu genau dieser Zeile.</div>
     ${composer}
-    <div id="commentTree">${comments.map(c => commentHtml(c, 0)).join('')}</div>`;
-}
-function countComments(nodes) {
-  return nodes.reduce((n, c) => n + 1 + countComments(c.children || []), 0);
+    <div id="commentTree">${generalRoots.map(c => commentHtml(c, 0)).join('')}</div>`;
 }
 function commentHtml(c, depth) {
   const id = getIdentity();
@@ -405,35 +493,7 @@ function commentHtml(c, depth) {
     ${childWrap}
   </div>`;
 }
-function wireComments(card) {
-  const post = $('#postComment');
-  if (post) post.onclick = async () => {
-    const ta = $('#newComment'); const body = ta.value.trim();
-    if (!body) return;
-    post.disabled = true;
-    try { await api('addComment', { cardId: card.id, body }); await viewCard(card.slug); }
-    catch (e) { alert(e.message); post.disabled = false; }
-  };
-  const tree = $('#commentTree');
-  if (!tree) return;
-  tree.addEventListener('click', async (e) => {
-    const btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    const cmt = btn.closest('.cmt'); const cid = cmt.dataset.id;
-    const act = btn.dataset.act;
-    if (act === 'link') {
-      const url = location.origin + location.pathname + cardLink(card.slug, cid);
-      try { await navigator.clipboard.writeText(url); toast('Link kopiert'); }
-      catch { prompt('Link kopieren:', url); }
-    } else if (act === 'del') {
-      if (!confirm('Kommentar löschen?')) return;
-      await api('deleteComment', { id: cid }); await viewCard(card.slug);
-    } else if (act === 'reply') {
-      openReply(cmt, card, cid);
-    }
-  });
-}
-function openReply(cmt, card, parentId) {
+function openReply(cmt, card, parentId, lineRef) {
   if ($('.reply-inline', cmt)) { $('.reply-inline', cmt).remove(); return; }
   const wrap = document.createElement('div');
   wrap.className = 'reply-inline reply-box';
@@ -444,7 +504,9 @@ function openReply(cmt, card, parentId) {
   const ta = $('textarea', wrap); ta.focus();
   $('button.btn.sm', wrap).onclick = async () => {
     const body = ta.value.trim(); if (!body) return;
-    await api('addComment', { cardId: card.id, parentId, body }); await viewCard(card.slug);
+    // Replies inherit the parent's line so they stay in the same thread group.
+    await api('addComment', { cardId: card.id, parentId, body, lineRef: lineRef || '' });
+    await viewCard(card.slug, null, lineRef || undefined);
   };
   $('[data-cancel]', wrap).onclick = () => wrap.remove();
 }
