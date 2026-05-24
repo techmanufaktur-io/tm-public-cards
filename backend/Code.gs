@@ -277,7 +277,8 @@ function enforceVisibility(c, auth) {
 }
 function publicCard(c) {
   return {
-    id: c.id, slug: c.slug, title: c.title, body: c.body,
+    // Coerce to string: a numeric-only title/body comes back from Sheets as a Number.
+    id: c.id, slug: String(c.slug), title: String(c.title), body: String(c.body),
     images: safeJson(c.images, []), visibility: c.visibility, spaceId: c.spaceId,
     ownerNamespace: c.ownerNamespace, createdAt: c.createdAt, updatedAt: c.updatedAt
   };
@@ -305,7 +306,7 @@ function deleteComment(p, user) {
 }
 function buildCommentTree(cardId) {
   const all = rows('comments').filter(c => c.cardId === cardId).map(c => ({
-    id: c.id, parentId: c.parentId, body: c.body, author: c.authorDisplay,
+    id: c.id, parentId: c.parentId, body: String(c.body), author: String(c.authorDisplay),
     authorNamespace: c.authorNamespace,
     deleted: c.deleted === true || c.deleted === 'TRUE',
     createdAt: c.createdAt, children: []

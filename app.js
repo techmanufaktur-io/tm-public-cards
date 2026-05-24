@@ -61,8 +61,9 @@ function timeAgo(iso) {
   const d = Math.round(h / 24); if (d < 30) return `vor ${d} T.`;
   return new Date(iso).toLocaleDateString('de-DE');
 }
-// Always sanitize rendered markdown (§9/§13).
-function renderMd(src) { return DOMPurify.sanitize(marked.parse(src || '', { breaks: true })); }
+// Always sanitize rendered markdown (§9/§13). Coerce to string — a numeric-only
+// body comes back from Sheets as a Number, which marked rejects.
+function renderMd(src) { return DOMPurify.sanitize(marked.parse(String(src == null ? '' : src), { breaks: true })); }
 
 let toastTimer;
 function toast(msg) {
@@ -297,7 +298,7 @@ async function viewFeed(spaceSlug) {
 }
 
 function snippet(body) {
-  const txt = (body || '')
+  const txt = String(body == null ? '' : body)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')     // images -> drop
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // links -> keep label
     .replace(/https?:\/\/\S+/g, '')           // bare URLs -> drop
