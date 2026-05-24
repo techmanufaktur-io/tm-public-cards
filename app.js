@@ -108,6 +108,12 @@ function cardLink(slug, commentId) {
   if (commentId) p += ANCHOR + String(commentId).replace(/^cmt_/, '');
   return p;
 }
+// Magic link: carries namespace + token so a new device auto-claims the identity.
+// The token is the secret — only ever share this link with yourself.
+function magicLink(id) {
+  return location.origin + location.pathname +
+    '#/claim/' + encodeURIComponent(id.namespace) + '/' + encodeURIComponent(id.token);
+}
 
 function parseHash() {
   let h = (location.hash || '').replace(/^#/, '');
@@ -115,6 +121,7 @@ function parseHash() {
   const seg = h.split('/').filter(Boolean); // e.g. ['c','slug__cmt_x']
   switch (seg[0]) {
     case 'onboard': return { name: 'onboard' };
+    case 'claim': return { name: 'claim', ns: decodeURIComponent(seg[1] || ''), token: decodeURIComponent(seg.slice(2).join('/')) };
     case 'new': return { name: 'editor', slug: null };
     case 'edit': return { name: 'editor', slug: seg[1] };
     case 'spaces': return { name: 'spaces' };
@@ -138,6 +145,7 @@ async function router() {
     else if (r.name === 'card') await viewCard(r.slug, r.anchorId);
     else if (r.name === 'editor') await viewEditor(r.slug);
     else if (r.name === 'onboard') viewOnboard();
+    else if (r.name === 'claim') await viewClaim(r.ns, r.token);
     else if (r.name === 'spaces') await viewSpaces();
     else await viewFeed();
   } catch (err) {
@@ -471,13 +479,18 @@ async function viewEditor(slug) {
 /* ---------- onboarding (§3) ---------- */
 function viewOnboard() {
   const id = getIdentity();
-  const current = id ? `<div class="card"><div class="row">
-      ${avatarHtml(id.displayName || id.firstName, id.namespace, 'lg')}
-      <div class="grow"><strong>${escapeHtml(id.displayName || (id.firstName + ' ' + id.lastName))}</strong><div class="muted">@${escapeHtml(id.namespace)}</div></div>
-      <button class="btn secondary sm" id="logout">Abmelden (lokal)</button>
-      <button class="btn ghost sm" id="copyTok">Token kopieren</button>
-    </div>
-    <div class="hint" style="margin-top:8px">Geräteübernahme: auf dem zweiten Gerät unten „Identität übernehmen" mit Namespace + Token nutzen.</div></div>` : '';
+  const current = id ? `<div class="card">
+      <div class="row">
+        ${avatarHtml(id.displayName || id.firstName, id.namespace, 'lg')}
+        <div class="grow"><strong>${escapeHtml(id.displayName || (id.firstName + ' ' + id.lastName))}</strong><div class="muted">@${escapeHtml(id.namespace)}</div></div>
+        <button class="btn secondary sm" id="logout">Abmelden (lokal)</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn sm" id="copyMagic">🔗 Magic Link kopieren</button>
+        <button class="btn ghost sm" id="copyTok">Token kopieren</button>
+      </div>
+      <div class="hint" style="margin-top:8px">Neues Gerät: <strong>Magic Link</strong> dort öffnen — die Identität wird automatisch übernommen. Der Link enthält dein Geheimnis (Token), teile ihn nur mit dir selbst.</div>
+    </div>` : '';
 
   main().innerHTML = `<div class="main-col">
     <div class="page-head"><h1>Identität</h1><a class="btn ghost sm" href="#/">← Feed</a></div>
@@ -506,8 +519,13 @@ function viewOnboard() {
   </div>`;
 
   if (id) {
-    $('#logout').onclick = () => { if (confirm('Identität lokal entfernen? Mit Namespace + Token wieder übernehmbar.')) { clearIdentity(); go('/'); router(); } };
+    $('#logout').onclick = () => { if (confirm('Identität lokal entfernen? Mit Magic Link bzw. Namespace + Token wieder übernehmbar.')) { clearIdentity(); go('/'); router(); } };
     $('#copyTok').onclick = async () => { try { await navigator.clipboard.writeText(id.token); toast('Token kopiert'); } catch { prompt('Token:', id.token); } };
+    $('#copyMagic').onclick = async () => {
+      const link = magicLink(id);
+      try { await navigator.clipboard.writeText(link); toast('Magic Link kopiert'); }
+      catch { prompt('Magic Link:', link); }
+    };
   }
 
   $('#doRegister').onclick = async () => {
@@ -531,6 +549,42 @@ function viewOnboard() {
     try { await claimIdentity(ns, tok); toast('Übernommen: @' + ns); go('/'); router(); }
     catch (e) { msg.textContent = e.message === 'BAD_TOKEN' ? 'Token stimmt nicht.' : (e.message === 'UNKNOWN_USER' ? 'Namespace unbekannt.' : e.message); }
   };
+}
+
+/* ---------- magic-link claim (auto-adopt identity on a new device) ---------- */
+async function viewClaim(ns, token) {
+  // Drop the token from the visible URL / history once handled.
+  const cleanUrl = () => { try { history.replaceState(null, '', location.pathname + location.search + '#/'); } catch (e) {} };
+  const finish = async (msg) => { cleanUrl(); toast(msg); renderSidebar({ name: 'feed' }); await viewFeed(); };
+  const doClaim = async () => {
+    main().innerHTML = `<div class="main-col"><div class="empty">Identität wird übernommen…</div></div>`;
+    try { await claimIdentity(ns, token); await finish('Übernommen: @' + ns); }
+    catch (e) {
+      const m = e.message === 'BAD_TOKEN' ? 'Token im Link stimmt nicht.'
+        : e.message === 'UNKNOWN_USER' ? 'Namespace unbekannt.' : e.message;
+      main().innerHTML = `<div class="main-col"><div class="empty">Magic Link ungültig: ${escapeHtml(m)}
+        <div style="margin-top:12px"><a class="btn secondary sm" href="#/onboard">Zum Onboarding</a></div></div></div>`;
+    }
+  };
+
+  if (!ns || !token) { main().innerHTML = `<div class="main-col"><div class="empty">Ungültiger Magic Link.</div></div>`; return; }
+  const existing = getIdentity();
+  if (existing && existing.namespace === ns && existing.token === token) { await finish('Bereits als @' + ns + ' angemeldet'); return; }
+  if (existing && existing.namespace !== ns) {
+    // Device already has a different identity — confirm before overwriting.
+    main().innerHTML = `<div class="main-col">
+      <div class="page-head"><h1>Identität übernehmen</h1></div>
+      <div class="card">Dieses Gerät ist als <strong>@${escapeHtml(existing.namespace)}</strong> angemeldet.
+        Mit dem Magic Link stattdessen als <strong>@${escapeHtml(ns)}</strong> anmelden?
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="mcConfirm">Als @${escapeHtml(ns)} übernehmen</button>
+          <a class="btn secondary" href="#/">Abbrechen</a>
+        </div>
+      </div></div>`;
+    $('#mcConfirm').onclick = doClaim;
+    return;
+  }
+  await doClaim();
 }
 
 /* ---------- spaces (§3.4 / §4) ---------- */

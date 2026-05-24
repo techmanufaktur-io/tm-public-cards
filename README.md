@@ -3,6 +3,7 @@
 Eine login-freie Canvas-, Bild- & Kommentar-**PWA**. Frontend ist statisch (Vanilla JS, kein Build-Step) auf **GitHub Pages**, Backend ist eine einzelne **Google-Sheets**-Datei über ein **Google-Apps-Script**-Web-API.
 
 - Jeder legt in Sekunden eine Identität an (Vor-/Nachname + global eindeutiger Namespace + geheimer Token, lokal gespeichert, geräteübergreifend übernehmbar).
+- **Magic Link** (`#/claim/<namespace>/<token>`): auf einem neuen Gerät geöffnet wird die Identität automatisch übernommen; der Token wird danach aus der sichtbaren URL entfernt. Der Link enthält das Geheimnis — nur mit sich selbst teilen.
 - **Cards** = Canvases aus Markdown + Bildern, Sichtbarkeit `private` / `public` / `space`.
 - Stabile Deep-Links (inkl. direktem Sprung zu einzelnen Kommentar-Ankern).
 - Reddit-artiger, beliebig tief verschachtelter Kommentarbaum mit Soft-Delete.
