@@ -75,6 +75,55 @@ function avatarHtml(name, ns, cls = '') {
   return `<span class="avatar ${cls}">${escapeHtml(initials(name, ns))}</span>`;
 }
 
+/* ---------- space colors & theming ---------- */
+// Curated accent palette (mirrors the backend). Each space carries one of these;
+// while viewing a space the whole UI accent switches to it.
+const SPACE_PALETTE = ['#4f46e5', '#2563eb', '#0891b2', '#0d9488', '#16a34a', '#ca8a04', '#dc2626', '#db2777', '#7c3aed', '#475569'];
+function pickSpaceColor(seed) {
+  let h = 0; for (const ch of String(seed)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return SPACE_PALETTE[h % SPACE_PALETTE.length];
+}
+function spaceColor(s) {
+  if (s && /^#[0-9a-f]{6}$/i.test(s.color || '')) return s.color;
+  return pickSpaceColor(s ? s.id : '');
+}
+// Pick readable text color (black/white) for a given accent via relative luminance.
+function contrastOn(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || ''); if (!m) return '#ffffff';
+  const n = parseInt(m[1], 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  return L > 0.55 ? '#111111' : '#ffffff';
+}
+// Override the global accent (and its readable foreground); null restores black.
+function applyTheme(color) {
+  const root = document.documentElement;
+  if (color && /^#[0-9a-f]{6}$/i.test(color)) {
+    root.style.setProperty('--accent', color);
+    root.style.setProperty('--accent-fg', contrastOn(color));
+  } else {
+    root.style.removeProperty('--accent');
+    root.style.removeProperty('--accent-fg');
+  }
+}
+function applyThemeForRoute(r) {
+  let color = null;
+  if (r && r.name === 'feed' && r.spaceSlug) {
+    const s = SPACES_CACHE.find(x => x.slug === r.spaceSlug);
+    if (s) color = spaceColor(s);
+  }
+  applyTheme(color); // for card routes, viewCard re-themes once the card is loaded
+}
+
+/* ---------- spaces cache (shared by sidebar, theming, badges) ---------- */
+let SPACES_CACHE = [];
+async function loadSpaces() {
+  if (!getIdentity()) { SPACES_CACHE = []; return SPACES_CACHE; }
+  try { SPACES_CACHE = await api('listSpaces', {}); } catch (e) { /* keep last */ }
+  return SPACES_CACHE;
+}
+const spaceById = (id) => SPACES_CACHE.find(s => s.id === id);
+
 /* ---------- image handling: downscale -> base64 -> uploadImage (§9/§13) ---------- */
 function fileToImage(file) {
   return new Promise((res, rej) => {
@@ -139,7 +188,9 @@ function parseHash() {
 async function router() {
   closeDrawer();
   const r = parseHash();
+  await loadSpaces();
   renderSidebar(r);
+  applyThemeForRoute(r);
   try {
     if (r.name === 'feed') await viewFeed(r.spaceSlug);
     else if (r.name === 'card') await viewCard(r.slug, r.anchorId);
@@ -154,21 +205,26 @@ async function router() {
 }
 
 /* ---------- sidebar shell (§11) ---------- */
-async function renderSidebar(route) {
+function renderSidebar(route) {
   const id = getIdentity();
   const sb = document.getElementById('sidebar');
+  const spaces = SPACES_CACHE;
   let spacesHtml = '';
   if (id) {
-    try {
-      const spaces = await api('listSpaces', {});
-      spacesHtml = spaces.length
-        ? spaces.map(s => `<a class="sb-link ${route && route.spaceSlug === s.slug ? 'active' : ''}" href="#/s/${escapeHtml(s.slug)}"><span class="ic">#</span>${escapeHtml(s.name)}</a>`).join('')
-        : `<div class="sb-section" style="text-transform:none;font-weight:400">Noch keine Spaces</div>`;
-    } catch { spacesHtml = ''; }
+    spacesHtml = spaces.length
+      ? spaces.map(s => {
+          const active = route && route.spaceSlug === s.slug;
+          const c = spaceColor(s);
+          const dot = `<span class="space-dot" style="background:${active ? contrastOn(c) : c}"></span>`;
+          return `<a class="sb-link ${active ? 'active' : ''}" href="#/s/${escapeHtml(s.slug)}">${dot}${escapeHtml(s.name)}</a>`;
+        }).join('')
+      : `<div class="sb-section" style="text-transform:none;font-weight:400">Noch keine Spaces</div>`;
   }
+  const themedSpace = route && route.spaceSlug ? spaces.find(s => s.slug === route.spaceSlug) : null;
   const isFeed = route && route.name === 'feed' && !route.spaceSlug;
   sb.innerHTML = `
-    <div class="sb-brand"><span class="dot"></span>PublicCards</div>
+    <div class="sb-brand"><span class="dot"></span><span class="brand-name">PublicCards${
+      themedSpace ? `<span class="brand-sub" style="color:${spaceColor(themedSpace)}">${escapeHtml(themedSpace.name)}</span>` : ''}</span></div>
     <nav class="sb-nav">
       <a class="sb-link ${isFeed ? 'active' : ''}" href="#/"><span class="ic">▦</span>Feed</a>
       <a class="sb-link ${route && route.name === 'editor' ? 'active' : ''}" href="#/new"><span class="ic">＋</span>Neue Card</a>
@@ -187,27 +243,28 @@ async function renderSidebar(route) {
 }
 
 /* ---------- views ---------- */
-function visBadge(v) {
-  const map = { public: 'public', private: 'private', space: 'space' };
-  return `<span class="badge">${escapeHtml(map[v] || v)}</span>`;
+// Visibility tag. Space cards render a colored badge with the space's name.
+function visibilityTag(card) {
+  if (card.visibility === 'space') {
+    const s = spaceById(card.spaceId);
+    if (s) { const c = spaceColor(s); return `<span class="badge" style="border-color:${c};color:${c}"><span class="space-dot" style="background:${c}"></span>${escapeHtml(s.name)}</span>`; }
+    return `<span class="badge">space</span>`;
+  }
+  return `<span class="badge">${escapeHtml(card.visibility)}</span>`;
 }
 
 async function viewFeed(spaceSlug) {
-  const id = getIdentity();
   main().innerHTML = `<div class="main-col"><div class="empty">Lädt…</div></div>`;
-  let space = null;
-  if (spaceSlug && id) {
-    const spaces = await api('listSpaces', {});
-    space = spaces.find(s => s.slug === spaceSlug);
-  }
+  const space = spaceSlug ? (SPACES_CACHE.find(s => s.slug === spaceSlug) || null) : null;
   const cards = await api('listCards', {});
   const list = spaceSlug
     ? cards.filter(c => c.visibility === 'space' && space && c.spaceId === space.id)
     : cards;
   list.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  const id = getIdentity();
 
   const head = spaceSlug
-    ? `<div class="page-head"><h1># ${escapeHtml(space ? space.name : spaceSlug)}</h1><a class="btn sm" href="#/new">＋ Card</a></div>`
+    ? `<div class="page-head"><h1><span class="space-dot lg" style="background:${space ? spaceColor(space) : 'var(--accent)'}"></span> ${escapeHtml(space ? space.name : spaceSlug)}</h1><a class="btn sm" href="#/new">＋ Card</a></div>`
     : `<div class="page-head"><h1>Feed</h1><a class="btn sm" href="#/new">＋ Card</a></div>`;
 
   const banner = id ? '' :
@@ -234,7 +291,7 @@ function cardItemHtml(c) {
     <div class="c-head">
       ${avatarHtml(c.ownerNamespace, c.ownerNamespace, 'sm')}
       <div class="meta"><div class="nm">@${escapeHtml(c.ownerNamespace)}</div><div class="tm">${timeAgo(c.updatedAt)}</div></div>
-      <span class="sp"></span>${visBadge(c.visibility)}
+      <span class="sp"></span>${visibilityTag(c)}
     </div>
     <h2 class="c-title">${escapeHtml(c.title)}</h2>
     <div class="c-snippet">${snippet(c.body)}</div>
@@ -245,6 +302,8 @@ async function viewCard(slug, anchorId) {
   const id = getIdentity();
   main().innerHTML = `<div class="main-col"><div class="empty">Lädt…</div></div>`;
   const { card, comments } = await api('getCard', { slug });
+  // Theme the detail view in the space's color when the card belongs to a known space.
+  if (card.spaceId) { const s = spaceById(card.spaceId); if (s) applyTheme(spaceColor(s)); }
   const isOwner = id && id.namespace === card.ownerNamespace;
   const gallery = (card.images && card.images.length)
     ? `<div class="gallery">${card.images.map(u => `<img src="${escapeHtml(u)}" alt="" loading="lazy">`).join('')}</div>` : '';
@@ -262,7 +321,7 @@ async function viewCard(slug, anchorId) {
         <div class="c-head">
           ${avatarHtml(card.ownerNamespace, card.ownerNamespace, 'sm')}
           <div class="meta"><div class="nm">@${escapeHtml(card.ownerNamespace)}</div><div class="tm">${timeAgo(card.updatedAt)}</div></div>
-          <span class="sp"></span>${visBadge(card.visibility)}
+          <span class="sp"></span>${visibilityTag(card)}
         </div>
         <h1 class="c-title" style="font-size:24px">${escapeHtml(card.title)}</h1>
         <div class="md">${renderMd(card.body)}</div>
@@ -592,12 +651,14 @@ async function viewSpaces() {
   const id = getIdentity();
   if (!id) { main().innerHTML = `<div class="main-col"><div class="empty">Erst <a href="#/onboard">Identität anlegen</a>.</div></div>`; return; }
   main().innerHTML = `<div class="main-col"><div class="empty">Lädt…</div></div>`;
-  const spaces = await api('listSpaces', {});
+  const spaces = await loadSpaces();
+  let pickColor = SPACE_PALETTE[Math.floor(Math.random() * SPACE_PALETTE.length)];
 
   const list = spaces.length ? spaces.map(s => {
     const owner = s.ownerNamespace === id.namespace;
-    return `<div class="card"><div class="space-item">
-      <span class="ic">#</span>
+    const c = spaceColor(s);
+    return `<div class="card" style="border-left:4px solid ${c}"><div class="space-item">
+      <span class="space-dot lg" style="background:${c}"></span>
       <div class="grow"><a href="#/s/${escapeHtml(s.slug)}"><strong>${escapeHtml(s.name)}</strong></a>
         <div class="muted">${s.members.length} Mitglied${s.members.length === 1 ? '' : 'er'}${owner ? ' · du bist Owner' : ''}</div></div>
       <a class="btn secondary sm" href="#/s/${escapeHtml(s.slug)}">Feed</a>
@@ -611,22 +672,32 @@ async function viewSpaces() {
 
   main().innerHTML = `<div class="main-col">
     <div class="page-head"><h1>Spaces</h1><a class="btn ghost sm" href="#/">← Feed</a></div>
-    <div class="card"><div class="row">
-      <input type="text" id="newSpaceName" placeholder="Name des neuen Space" style="flex:1;min-width:180px">
+    <div class="card">
+      <div class="field" style="margin-bottom:10px"><label>Neuer Space</label>
+        <input type="text" id="newSpaceName" placeholder="Name des Space"></div>
+      <div class="field" style="margin-bottom:14px"><label>Farbe</label><div class="swatches" id="swatches"></div></div>
       <button class="btn" id="createSpace">Space anlegen</button>
-    </div></div>
+    </div>
     ${list}
   </div>`;
 
+  const renderSwatches = () => {
+    $('#swatches').innerHTML = SPACE_PALETTE.map(c =>
+      `<button class="swatch ${c === pickColor ? 'sel' : ''}" data-c="${c}" style="background:${c}" title="${c}" aria-label="Farbe ${c}"></button>`).join('');
+    $$('#swatches .swatch').forEach(b => b.onclick = () => { pickColor = b.dataset.c; renderSwatches(); });
+  };
+  renderSwatches();
+
   $('#createSpace').onclick = async () => {
     const name = $('#newSpaceName').value.trim(); if (!name) return;
-    await api('createSpace', { name }); toast('Space angelegt'); viewSpaces(); renderSidebar(parseHash());
+    await api('createSpace', { name, color: pickColor }); toast('Space angelegt');
+    await loadSpaces(); renderSidebar(parseHash()); viewSpaces();
   };
   $$('[data-addbtn]').forEach(btn => btn.onclick = async () => {
     const sid = btn.dataset.addbtn;
     const inp = $(`[data-addns="${sid}"]`); const ns = inp.value.trim().toLowerCase();
     if (!ns) return;
-    try { await api('addSpaceMember', { spaceId: sid, namespace: ns }); toast('@' + ns + ' hinzugefügt'); viewSpaces(); }
+    try { await api('addSpaceMember', { spaceId: sid, namespace: ns }); toast('@' + ns + ' hinzugefügt'); await loadSpaces(); viewSpaces(); }
     catch (e) { alert(e.message === 'UNKNOWN_USER' ? 'Unbekannter Namespace.' : e.message); }
   });
 }

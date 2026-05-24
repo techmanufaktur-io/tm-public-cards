@@ -14,8 +14,15 @@ const SCHEMA = {
   users:    ['namespace', 'firstName', 'lastName', 'displayName', 'tokenHash', 'createdAt'],
   cards:    ['id', 'ownerNamespace', 'title', 'body', 'images', 'visibility', 'spaceId', 'slug', 'createdAt', 'updatedAt'],
   comments: ['id', 'cardId', 'parentId', 'authorNamespace', 'authorDisplay', 'body', 'createdAt', 'deleted'],
-  spaces:   ['id', 'name', 'slug', 'ownerNamespace', 'members', 'createdAt'],
+  spaces:   ['id', 'name', 'slug', 'ownerNamespace', 'members', 'createdAt', 'color'],
 };
+
+// Curated accent palette for spaces (all medium-dark -> readable on white text).
+const SPACE_PALETTE = ['#4f46e5', '#2563eb', '#0891b2', '#0d9488', '#16a34a', '#ca8a04', '#dc2626', '#db2777', '#7c3aed', '#475569'];
+function pickSpaceColor(seed) {
+  let h = 0; for (const ch of String(seed)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return SPACE_PALETTE[h % SPACE_PALETTE.length];
+}
 
 // --- one-time setup ---
 // Creates the 4 tabs with headers and a Drive folder for uploads. Idempotent.
@@ -299,11 +306,12 @@ function buildCommentTree(cardId) {
 // --- spaces ---
 function createSpace(p, user) {
   const id = 'spc_' + uuid();
+  const color = /^#[0-9a-fA-F]{6}$/.test(p.color || '') ? p.color : pickSpaceColor(id);
   appendRow('spaces', {
     id, name: p.name || 'Space', slug: makeSlug(p.name, id),
-    ownerNamespace: user.namespace, members: JSON.stringify([user.namespace]), createdAt: now()
+    ownerNamespace: user.namespace, members: JSON.stringify([user.namespace]), createdAt: now(), color
   });
-  return { id, slug: rows('spaces').find(s => s.id === id).slug };
+  return { id, slug: rows('spaces').find(s => s.id === id).slug, color };
 }
 function addSpaceMember(p, user) {
   const s = rows('spaces').find(x => x.id === p.spaceId);
@@ -319,7 +327,7 @@ function listSpaces(p, user) {
   return rows('spaces')
     .filter(s => safeJson(s.members, []).indexOf(user.namespace) >= 0)
     .map(s => ({ id: s.id, name: s.name, slug: s.slug, ownerNamespace: s.ownerNamespace,
-                 members: safeJson(s.members, []) }));
+                 members: safeJson(s.members, []), color: s.color || pickSpaceColor(s.id) }));
 }
 
 // --- util ---
