@@ -213,7 +213,12 @@ async function viewFeed(spaceSlug) {
 }
 
 function snippet(body) {
-  const txt = (body || '').replace(/[#>*_`!\[\]()-]/g, ' ').replace(/\s+/g, ' ').trim();
+  const txt = (body || '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')     // images -> drop
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // links -> keep label
+    .replace(/https?:\/\/\S+/g, '')           // bare URLs -> drop
+    .replace(/[#>*_`~]/g, ' ')                // remaining md punctuation
+    .replace(/\s+/g, ' ').trim();
   return escapeHtml(txt.slice(0, 180));
 }
 function cardItemHtml(c) {
